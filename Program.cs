@@ -1,12 +1,13 @@
 ﻿using Microsoft.Data.SqlClient;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
-var connectionString = "Server=192.168.56.1;Database=ADMCONACT;User Id=xges;Password=lalo7;TrustServerCertificate=True;";
-// Add services to the container.
+
 builder.Services.AddRazorPages();
 
 var app = builder.Build();
-
 
 app.MapGet("/webhook", (HttpRequest request) =>
 {
@@ -14,7 +15,9 @@ app.MapGet("/webhook", (HttpRequest request) =>
     var token = request.Query["hub.verify_token"].ToString();
     var challenge = request.Query["hub.challenge"].ToString();
 
-    if (mode == "subscribe" && token == "MI_TOKEN")
+    var verifyToken = builder.Configuration["VERIFY_TOKEN"];
+
+    if (mode == "subscribe" && token == verifyToken)
     {
         return Results.Text(challenge, "text/plain");
     }
@@ -30,11 +33,14 @@ app.MapPost("/webhook", async (HttpRequest request) =>
     Console.WriteLine("POST RECIBIDO");
     Console.WriteLine(body);
 
-    var json = Newtonsoft.Json.Linq.JObject.Parse(body);
+    var json = JObject.Parse(body);
 
     var cambios = json["entry"]?[0]?["changes"];
     if (cambios == null)
         return Results.Ok();
+
+    var supabaseUrl = builder.Configuration["SUPABASE_URL"];
+    var supabaseKey = builder.Configuration["SUPABASE_KEY"];
 
     foreach (var change in cambios)
     {
@@ -50,55 +56,61 @@ app.MapPost("/webhook", async (HttpRequest request) =>
 
             string? idBoton = null;
             string? textoBoton = null;
-            string tipoRespuesta = "";
 
-            // CASO 1: botón simple
             if (tipo == "button")
             {
                 idBoton = msg["button"]?["payload"]?.ToString();
                 textoBoton = msg["button"]?["text"]?.ToString();
-                tipoRespuesta = "BOTON";
             }
 
-            // CASO 2: interactive/button_reply
             if (tipo == "interactive")
             {
                 var interactiveType = msg["interactive"]?["type"]?.ToString();
-
                 if (interactiveType == "button_reply")
                 {
                     idBoton = msg["interactive"]?["button_reply"]?["id"]?.ToString();
                     textoBoton = msg["interactive"]?["button_reply"]?["title"]?.ToString();
-                    tipoRespuesta = "BOTON";
                 }
             }
 
             if (!string.IsNullOrWhiteSpace(idBoton) || !string.IsNullOrWhiteSpace(textoBoton))
             {
-                using (var cn = new SqlConnection(connectionString))
+                try
                 {
-                    cn.Open();
+                    using var client = new HttpClient();
 
-                    var sql = @"INSERT INTO WhatsAppRespuestas
-                                (TelefonoCliente, NombreCliente, TextoMensaje, TipoRespuesta, ValorBoton, Fecha)
-                                VALUES (@tel, @nom, @txt, @tipo, @val, GETDATE())";
+                    client.DefaultRequestHeaders.Add("apikey", supabaseKey);
+                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {supabaseKey}");
 
-                    using var cmd = new SqlCommand(sql, cn);
-                    cmd.Parameters.AddWithValue("@tel", (object?)telefono ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@nom", DBNull.Value);
-                    cmd.Parameters.AddWithValue("@txt", (object?)textoBoton ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@tipo", tipoRespuesta);
-                    cmd.Parameters.AddWithValue("@val", (object?)idBoton ?? DBNull.Value);
-                    cmd.ExecuteNonQuery();
+                    var url = $"{supabaseUrl}/rest/v1/WhatsAppRespuestas";
+
+                    var data = new
+                    {
+                        telefono = telefono,
+                        texto = textoBoton,
+                        valor = idBoton
+                    };
+
+                    var payload = JsonConvert.SerializeObject(data);
+                    var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+                    var response = await client.PostAsync(url, content);
+                    var responseBody = await response.Content.ReadAsStringAsync();
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine("ERROR SUPABASE:");
+                        Console.WriteLine(responseBody);
+                    }
+                    else
+                    {
+                        Console.WriteLine("GUARDADO EN SUPABASE");
+                    }
                 }
-
-                Console.WriteLine("GUARDADO EN WhatsAppRespuestas");
-                Console.WriteLine($"Telefono: {telefono} | Texto: {textoBoton} | Valor: {idBoton}");
-
-                if ((idBoton ?? "").Trim().Equals("Recibir Estado", StringComparison.OrdinalIgnoreCase) ||
-                    (textoBoton ?? "").Trim().Equals("Recibir Estado", StringComparison.OrdinalIgnoreCase))
+                catch (Exception ex)
                 {
-                    Console.WriteLine("CONFIRMÓ RECIBIR ESTADO");
+                    Console.WriteLine("ERROR AL GUARDAR EN SUPABASE:");
+                    Console.WriteLine(ex.ToString());
                 }
             }
         }
@@ -107,21 +119,14 @@ app.MapPost("/webhook", async (HttpRequest request) =>
     return Results.Ok();
 });
 
-// Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
-{  
+{
     app.UseExceptionHandler("/Error");
-    // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
 
-//app.UseHttpsRedirection();
 app.UseStaticFiles();
-
 app.UseRouting();
-
 app.UseAuthorization();
-
 app.MapRazorPages();
-
 app.Run();
