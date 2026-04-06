@@ -82,7 +82,7 @@ app.MapPost("/webhook", async (HttpRequest request) =>
                     client.DefaultRequestHeaders.Add("apikey", supabaseKey);
                     client.DefaultRequestHeaders.Add("Authorization", $"Bearer {supabaseKey}");
 
-                    var url = $"{supabaseUrl}/rest/v1/WhatsAppRespuestas";
+                    var url = $"{supabaseUrl}/rest/v1/whatsapprespuestas";
 
                     var data = new
                     {
